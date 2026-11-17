@@ -40,7 +40,7 @@ try {
   await page.keyboard.press('Escape');
   await page.click('#t-model');
   const model = await page.locator('#p-model').textContent();
-  for (const text of ['Baseline ranks better', 'Current (=before)', 'smart_contract_haircut_rate', 'depeg_haircut_rate', '0.4161', '0.3989']) assert(model.includes(text), text);
+  for (const text of ['Spearman beats baseline', 'Ensemble', 'Before v2', 'smart_contract_haircut_rate', 'depeg_haircut_rate', '0.4161', '0.3989', '0.4237']) assert(model.includes(text), text);
   assert.equal(await page.locator('#p-model .g2m > :last-child tbody tr').count(), 144);
   await page.locator('#p-model .g2m > :last-child tbody tr').first().click();
   assert((await page.locator('#d-body').textContent()).includes('EXCLUDED'));

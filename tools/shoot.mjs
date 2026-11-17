@@ -19,7 +19,7 @@ const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ?
 const input = resolve(repo, arg('input', '../token-radar-01-kit/input/snapshot.json'));
 const out = resolve(repo, arg('output', 'out'));
 const shots = join(repo, 'screenshots');
-const PW = process.env.PLAYWRIGHT_PKG || '/workspace/projects/2de6bbf5-9a6e-4c92-adbd-7caaf9109ad3/makefun/shot-tools/node_modules/playwright/index.mjs';
+const PW = process.env.PLAYWRIGHT_PKG || resolve(repo, '../shot-tools/node_modules/playwright/index.mjs');
 const W = 1440, H = 900;
 const COUNT = 3;
 

@@ -4,6 +4,36 @@ This is the frontend's complete handoff. Replace only `dashboard/index.html`, `d
 
 ## Changes
 
+### Adopted ensemble: peer-radar-3
+
+This revision supersedes the retained-v2 decision below. The product owner permits a within-3× drop of up to four percentage points, with coverage at least 42%, provided Spearman beats baseline and median factor is no worse than 3.82×. The **75% fitted-G/T k16 + 25% global-ratio geometric ensemble** qualifies and is adopted without further parameter search.
+
+| Same 128 target-free LOO folds | Spearman | Median error factor | Within 3× |
+| --- | ---: | ---: | ---: |
+| Before: v2 | 0.3989138894 | 3.8198540881× | 59/128 = 46.09375% |
+| Adopted v3 | 0.4236861381 | 3.6312601531× | 55/128 = 42.96875% |
+| Global-ratio baseline | 0.4161497436 | 5.0695886515× | 45/128 = 35.15625% |
+
+Coverage drops **3.125 percentage points**, explicitly shown beside the rank improvement. The UI compares Ensemble / Before v2 / Baseline with n, error and coverage, and states that rank beats baseline while coverage is lower than v2. These selection diagnostics use this snapshot, not an untouched future test set.
+
+```text
+F = exp(a_cat) × (TVL / $100M)^beta × G_base^gamma × T_base^tau
+B = TVL × held-out-global median(mcap/TVL), clamped ratio 0.02..5
+implied = round(F^0.75 × B^0.25)
+```
+
+The robust fitter initializes beta/gamma/tau at 0.5/1/1. Each of 30 iterations computes shrunk category residual offsets, Huber weights (delta 1.345; MAD scale 1.4826, floor 0.1), updates the three bounded coefficients by weighted coordinate regression, then recenters the pooled intercept by median. Final category intercepts shrink to the pooled intercept with n/(n+16). All inputs are log-TVL, the existing clamped-growth base and existing tracking-age base, plus category. No names/slugs, chain count, external data or target cap enter prediction fitting.
+
+New constants: `rank_shrink_k=16`, `ensemble_fit_weight=0.75`, `rank_beta_cap=2`, `growth_coef_floor/cap=0/3`, `time_coef_floor/cap=-3/3`. Original `shrink_k=4` and `fit_beta_cap=1` are retained for v1 diagnostics and the separately refitted v2 comparison. Before and ensemble fits both exclude the target, as do all age/category/global pools. Ensemble weight and shrinkage are fixed model-selection choices, not per-record adjustments.
+
+API properties are retained. New `calibration.before_fit` and `CategoryMultiple.before_fit` hold the v2 fit for honest before predictions. New TradingPeer `before_value_usd` supplies `validation.before`; this is no longer an alias of the adopted prediction. `validation.legacy` remains v1, `baseline` remains the naive global ratio, and `rank_beats_baseline` is now true.
+
+`calibration.fit` and `model.fit` report **effective ensemble** `beta` and `pooled_log_intercept`, plus `base_beta`, `base_growth_power`, `base_time_power`, `base_pooled_log_intercept`, `baseline_log_pivot` and `ensemble_weight`. Category `fit` adds `base_log_intercept` and the actual `shrink_weight=n/(n+16)`; its `log_intercept` and `pivot_multiple` are ensemble-adjusted. Existing raw-ratio `shrink_weight` remains the v1 diagnostic, so the UI uses `fit.shrink_weight` for the fitted table.
+
+Growth/time add `base_factor` and `fit_power`; their existing `factor` is the applied value. Thus `growth.factor=G_base^(0.75×gamma)` and `time.factor=T_base^(0.75×tau)`. `multiple.factor` is the effective intercept/size multiplier, so the existing `TVL × M_eff × G × T` UI arithmetic remains exact before rounding. New full-fit values: base beta 0.5289250791, gamma **0**, tau −2.6401801199; effective beta 0.6466938093 and time exponent −1.9801350899. Zero growth weight and inverse age association are disclosed, not treated as causal launch predictions. Confidence and farm-cost logic remain unchanged.
+
+Dashboard changes are hand-authored patches; the compacting tool was not rerun. The combined source ceiling remains 56,000 bytes. Root README, MIT license and owner claim are now supplied; Git and screenshot recapture remain operator-owned. Browser-tool defaults use sibling relative paths or environment overrides, never machine-specific directory literals.
+
 ### Final submission pass
 
 **Valuation is retained v2, not a claimed ranking improvement.** On the same 128 held-out records, before and after remain Spearman 0.3989138894, median error factor 3.8198541, within 3× 59/128 (46.09375%). The naive ratio baseline's Spearman is higher, 0.4161497436; its median factor is 5.0695887 and within 3× is 45/128 (35.15625%). The Model tab now says **“Baseline ranks better”** explicitly, with n and all metrics beside the retained model. No model is adopted simply because one metric improved.

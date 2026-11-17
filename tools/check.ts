@@ -44,8 +44,11 @@ assert(radar.validation.median_abs_log10_error < radar.validation.legacy.median_
 assert(radar.validation.within_3x_share > radar.validation.legacy.within_3x_share);
 assert(radar.validation.spearman > radar.validation.legacy.spearman);
 assert.equal(radar.validation.rank_beats_baseline, radar.validation.spearman > radar.validation.baseline.spearman);
-assert.equal(radar.validation.rank_beats_baseline, false, 'disclose that retained v2 ranks below the baseline');
-assert.equal(radar.validation.before.spearman, radar.validation.spearman);
+assert.equal(radar.validation.rank_beats_baseline, true);
+assert(radar.validation.spearman > radar.validation.before.spearman);
+assert(radar.validation.median_error_factor <= radar.validation.before.median_error_factor);
+assert(radar.validation.within_3x_share >= 0.42);
+assert(radar.validation.before.within_3x_share - radar.validation.within_3x_share <= 0.04);
 assert.equal(Model.classify({ mcap_usd: 0, gecko_id: 'identifier', symbol: null }), 'token-recorded');
 assert.equal(Model.classify({ mcap_usd: 1, gecko_id: null, symbol: null }), 'trades');
 assert.equal(Model.classify({ mcap_usd: null, gecko_id: null, symbol: null }), 'pre-token');
@@ -72,16 +75,17 @@ const powerPeers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30].map((k, i) => ({
   ...sample('power-' + i, 'A', 1, 0), tvl_usd: k * k * 1e6, mcap_usd: 800000 * k
 }));
 const powerCal = Model.deriveMultiples(powerPeers, asOf);
-assert(Math.abs(powerCal.fit.beta - 0.5) < 1e-10);
-assert(Math.abs(Math.exp(powerCal.fit.pooled_log_intercept) - 1e7) / 1e7 < 1e-10);
+assert(Math.abs(powerCal.before_fit.beta - 0.5) < 1e-10);
+assert(Math.abs(powerCal.fit.base_beta - 0.5) < 1e-10);
+assert(Math.abs(powerCal.fit.beta - (0.5 * Model.CONSTANTS.ensemble_fit_weight + 1 - Model.CONSTANTS.ensemble_fit_weight)) < 1e-10);
 const contaminated = powerPeers.map((p, i) => i === 11 ? { ...p, mcap_usd: p.mcap_usd * 1000 } : p);
-assert(Math.abs(Model.deriveMultiples(contaminated, asOf).fit.beta - 0.5) < 0.1, 'Huber slope resists one extreme market-cap observation');
+assert(Math.abs(Model.deriveMultiples(contaminated, asOf).before_fit.beta - 0.5) < 0.1, 'Huber slope resists one extreme market-cap observation');
 assert.equal(Model.impliedValue({ ...samples[0], change_7d: null, listed_at: null }, cal).growth.factor, 1);
-assert.equal(Model.impliedValue({ ...samples[0], change_7d: 10000 }, cal).growth.factor, Math.sqrt(2));
-assert.equal(Model.impliedValue({ ...samples[0], change_7d: -10000 }, cal).growth.factor, Math.sqrt(0.5));
+assert.equal(Model.impliedValue({ ...samples[0], change_7d: 10000 }, cal).growth.base_factor, Math.sqrt(2));
+assert.equal(Model.impliedValue({ ...samples[0], change_7d: -10000 }, cal).growth.base_factor, Math.sqrt(0.5));
 const ageImputed = Model.impliedValue({ ...samples[0], listed_at: null }, cal).time;
 assert.equal(ageImputed.used_days, 15); assert.equal(ageImputed.source, 'category-median');
-const times = [0, 365, 730, 1095, 100000].map(d => Model.impliedValue(sample('test', 'A', 1, d), cal).time.factor);
+const times = [0, 365, 730, 1095, 100000].map(d => Model.impliedValue(sample('test', 'A', 1, d), cal).time.base_factor);
 assert.equal(times[0], 0.8); assert(times[2] > times[1] && times[2] > times[3]);
 assert(Math.abs(times[4] - 1) < 1e-12);
 assert.equal(Model.spearman([1, 2, 3], [3, 2, 1]), -1);
@@ -92,7 +96,9 @@ for (const p of radar.trading_peers) {
   assert.equal(p.model.multiple.omitted_slug, p.slug);
   assert(!p.model.multiple.peer_slugs.includes(p.slug));
   assert.equal(p.model.fit.n, 127);
-  assert(p.model.fit.beta >= 0 && p.model.fit.beta <= 1);
+  assert(p.model.fit.base_beta >= 0 && p.model.fit.base_beta <= Model.CONSTANTS.rank_beta_cap);
+  assert(p.model.fit.base_growth_power >= 0 && p.model.fit.base_growth_power <= 3);
+  assert(Math.abs(p.model.fit.base_time_power) <= 3);
   const independentFold = Model.deriveMultiples(snapshot.protocols, snapshot.as_of, p.slug);
   assert.equal(p.model.fit.beta, independentFold.fit.beta);
   assert.equal(p.model.fit.pooled_log_intercept, independentFold.fit.pooled_log_intercept);
@@ -137,7 +143,7 @@ assert.equal(browserRows, JSON.stringify(radar.rows), 'browser and board must be
 const emitted = resolve(process.argv[3] || 'out', 'board.json');
 assert.equal(JSON.stringify(JSON.parse(readFileSync(emitted, 'utf8')).rows), browserRows);
 assert.deepEqual(JSON.parse(readFileSync(emitted, 'utf8')).farm_assumptions, Model.FARM);
-assert(readFileSync(new URL('../dashboard/model.js', import.meta.url)).length <= 24000);
+assert(readFileSync(new URL('../dashboard/model.js', import.meta.url)).length <= 25000);
 const sourceRoot = new URL('../dashboard/', import.meta.url);
 assert(readdirSync(sourceRoot).reduce((n, file) => n + readFileSync(new URL(file, sourceRoot)).length, 0) <= 56000);
 

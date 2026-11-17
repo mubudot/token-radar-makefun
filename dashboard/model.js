@@ -1,6 +1,6 @@
 (function(root){
 'use strict';
-const VERSION='peer-radar-2';
+const VERSION='peer-radar-3';
 const C=Object.freeze({
 shrink_k:4,
 multiple_floor:0.02,
@@ -25,19 +25,21 @@ fit_beta_cap:1,
 fit_iterations:30,
 fit_huber_delta:1.345,
 fit_mad_scale:1.4826,
-fit_scale_floor:0.1
+fit_scale_floor:0.1,
+rank_shrink_k:16,ensemble_fit_weight:0.75,rank_beta_cap:2,
+growth_coef_floor:0,growth_coef_cap:3,time_coef_floor:-3,time_coef_cap:3
 });
 const METHOD=Object.freeze({
-formula:'round(exp(a_category) × (TVL/$100M)^β × G × T) = round(TVL × M_effective × G × T)',
-multiple:'M_effective=exp(a_category)/$100M × (TVL/$100M)^(β-1). Raw ratio fields are v1 diagnostics; fitted intercepts use w=n/(n+4).',
-fit:'Joint Huber on log(mcap)-log(G×T); pooled β∈[0,1],median category intercepts shrunk to pooled. 30 iterations; δ=1.345,MAD×1.4826,scale≥0.1. G/T unchanged priors.',
-growth:'G=(1+clamp(change_7d,-50,100)/100)^0.5; missing→1,flagged.',
-time:'T=.80+.35(1-exp(-d/365))-.15(1-exp(-max(d-730,0)/730)); peak 1.103 at 730d,fades to 1: old records may never launch.',
+formula:'round(F^0.75 × B^0.25); F=exp(a_cat)×(TVL/$100M)^β×G_base^γ×T_base^τ; B=TVL×global ratio',
+multiple:'75% fit + 25% baseline in log space; raw ratios are v1 diagnostics.',
+fit:'Joint Huber; n/(n+16) category prior. β[0,2],γ[0,3],τ[-3,3]; 30 iterations, refit in every LOO fold.',
+growth:'G_base=sqrt(1+clamp(7d,-50,100)/100); G=G_base^(0.75γ). Missing→1; γ may be zero.',
+time:'T_base=.80+.35(1-exp(-d/365))-.15(1-exp(-max(d-730,0)/730)); T=T_base^(0.75τ). Association,not launch causation.',
 missing_age:'Missing date→category median age→global median→365d; flagged.',
-validation:'Refit without target,including age pools/category priors. Report median |log10(predicted/market)|,within-3× and tie-aware Spearman.',
-limits:'Market-cap proxy,not price/allocation/launch odds. Supply/rewards unknown; product TVL may overlap.',
-eligibility:'Records no token≠token absent. Apply watchlist category/name exclusions without TVL floor; parent metadata is unavailable.',
-confidence:'Evidence: high≥8 peers+known growth/age; medium≥3 peers; else low. Not launch odds.'
+validation:'Target-free fits/priors/ages; median log-error,within-3×,Spearman.',
+limits:'Market-cap proxy,not price or launch odds. Rewards unknown; TVL may overlap.',
+eligibility:'Records no token≠token absent; watchlist rules without TVL floor. Parent unknown.',
+confidence:'Evidence: high≥8 peers+known inputs; medium≥3; else low. Not launch odds.'
 });
 const FARM=Object.freeze({
 opportunity_apr:0.05,
@@ -66,7 +68,7 @@ risk_review_minutes:5,
 exit_minutes:10,
 max_ltv:0.20,
 extended_capital_factor:2,
-assumptions:'Total=gas+fee reserve+opportunity+capital haircuts; principal is exposure,not an expense. Haircuts are horizon stress allowances,not measured loss probabilities; full capital can be lost. Bridge/rent/interest/funding unpriced; verify access/rewards.'
+assumptions:'Gas+fees+opportunity+stress haircuts; principal exposed,not spent. Haircuts are not probabilities; total loss possible. Bridge/interest/funding extra.'
 });
 const GAS=Object.freeze({
 Ethereum:5,
@@ -189,7 +191,9 @@ omitted_slug:omitSlug||null,
 global,
 categories
 };
-cal.fit=fitLogModel(peers,cal);
+cal.before_fit=fitLogModel(peers,cal,false);
+categories.forEach(c=>{c.before_fit=c.fit;});
+cal.fit=fitLogModel(peers,cal,true);
 return cal;
 }
 function factors(p,cal){
@@ -227,66 +231,37 @@ factor:time
 }
 };
 }
-function fitLogModel(peers,cal){
-const pts=peers.map((p)=>{
-const f=factors(p,cal);
-return{
-x:Math.log(p.tvl_usd/C.fit_pivot_usd),
-y:Math.log(p.mcap_usd)-Math.log(f.growth.factor*f.time.factor),
-category:categoryOf(p)
-};
-});
-const groups=cal.categories.map((cat)=>pts.filter((p)=>p.category===cat.category));
-function slope(a,weights){
-let sw=0,
-sx=0,
-sy=0,
-xx=0,
-xy=0;
-a.forEach((p,i)=>{
-const w=weights?weights[i]:1;
-sw+=w;
-sx+=w*p.x;
-sy+=w*p.y;
-});
-a.forEach((p,i)=>{
-const w=weights?weights[i]:1,
-x=p.x-sx/sw;
-xx+=w*x*x;
-xy+=w*x*(p.y-sy/sw);
-});
-return xx?clamp(xy/xx,C.fit_beta_floor,C.fit_beta_cap):0;
+function fitLogModel(peers,cal,rank){
+const pts=peers.map(p=>{const f=factors(p,cal);return{
+x:rank?[Math.log(p.tvl_usd/C.fit_pivot_usd),Math.log(f.growth.factor),Math.log(f.time.factor)]:[Math.log(p.tvl_usd/C.fit_pivot_usd)],
+y:Math.log(p.mcap_usd)-(rank?0:Math.log(f.growth.factor*f.time.factor)),category:categoryOf(p)};});
+const groups=cal.categories.map(c=>pts.filter(p=>p.category===c.category)),k=rank?C.rank_shrink_k:C.shrink_k;
+const bounds=rank?[[0,C.rank_beta_cap],[C.growth_coef_floor,C.growth_coef_cap],[C.time_coef_floor,C.time_coef_cap]]:[[C.fit_beta_floor,C.fit_beta_cap]];
+function slope(a,weights,j){
+let sw=0,sx=0,sy=0,xx=0,xy=0;
+a.forEach((p,i)=>{const w=weights?weights[i]:1;sw+=w;sx+=w*p.x[j];sy+=w*p.y;});
+a.forEach((p,i)=>{const w=weights?weights[i]:1,x=p.x[j]-sx/sw;xx+=w*x*x;xy+=w*x*(p.y-sy/sw);});
+return clamp(xx?xy/xx:0,...bounds[j]);
 }
-let beta=slope(pts),
-alpha=median(pts.map((p)=>p.y-beta*p.x));
-for(let k=0;k<C.fit_iterations;k++){
-const offsets=groups.map((g)=>g.length?g.length/(g.length+C.shrink_k)*median(g.map((p)=>p.y-alpha-beta*p.x)):0);
-const adjusted=pts.map((p)=>({
-x:p.x,
-y:p.y-offsets[cal.categories.findIndex((c)=>c.category===p.category)]
-}));
-const r=adjusted.map((p)=>p.y-alpha-beta*p.x),
-mid=median(r);
-const scale=Math.max(C.fit_scale_floor,C.fit_mad_scale*median(r.map((v)=>Math.abs(v-mid))));
-beta=slope(adjusted,r.map((v)=>Math.min(1,C.fit_huber_delta*scale/Math.max(Math.abs(v),Number.EPSILON))));
-alpha=median(pts.map((p)=>p.y-beta*p.x));
+const b=rank?[0.5,1,1]:[slope(pts,null,0)],dot=(p,omit=-1)=>b.reduce((s,v,j)=>s+(j===omit?0:v*p.x[j]),0);
+let alpha=median(pts.map(p=>p.y-dot(p)));
+for(let iter=0;iter<C.fit_iterations;iter++){
+const offsets=groups.map(g=>g.length?g.length/(g.length+k)*median(g.map(p=>p.y-alpha-dot(p))):0);
+const adjusted=pts.map(p=>({x:p.x,y:p.y-offsets[cal.categories.findIndex(c=>c.category===p.category)]}));
+const r=adjusted.map(p=>p.y-alpha-dot(p)),mid=median(r),scale=Math.max(C.fit_scale_floor,C.fit_mad_scale*median(r.map(v=>Math.abs(v-mid))));
+const weights=r.map(v=>Math.min(1,C.fit_huber_delta*scale/Math.max(Math.abs(v),Number.EPSILON)));
+for(let j=0;j<b.length;j++)b[j]=slope(adjusted.map(p=>({x:p.x,y:p.y-dot(p,j)})),weights,j);
+alpha=median(pts.map(p=>p.y-dot(p)));
 }
+const mix=rank?C.ensemble_fit_weight:1,prior=Math.log(C.fit_pivot_usd*cal.global.multiple);
 cal.categories.forEach((cat,i)=>{
-const raw=median(groups[i].map((p)=>p.y-beta*p.x)),
-w=cat.shrink_weight;
-const intercept=w*(raw===null?alpha:raw)+(1-w)*alpha;
-cat.fit={
-raw_log_intercept:raw,
-log_intercept:intercept,
-pivot_multiple:Math.exp(intercept)/C.fit_pivot_usd
-};
+const raw=median(groups[i].map(p=>p.y-dot(p))),w=cat.n/(cat.n+k),base=w*(raw===null?alpha:raw)+(1-w)*alpha;
+const intercept=mix*base+(1-mix)*prior;
+cat.fit={raw_log_intercept:raw,log_intercept:intercept,pivot_multiple:Math.exp(intercept)/C.fit_pivot_usd,shrink_weight:w,base_log_intercept:base};
 });
-return{
-beta,
-pooled_log_intercept:alpha,
-pivot_tvl_usd:C.fit_pivot_usd,
-n:pts.length
-};
+return{beta:mix*b[0]+1-mix,pooled_log_intercept:mix*alpha+(1-mix)*prior,pivot_tvl_usd:C.fit_pivot_usd,n:pts.length,
+growth_power:rank?mix*b[1]:1,time_power:rank?mix*b[2]:1,ensemble_weight:mix,
+base_beta:b[0],base_growth_power:rank?b[1]:1,base_time_power:rank?b[2]:1,base_pooled_log_intercept:alpha,baseline_log_pivot:prior};
 }
 function impliedValue(p,cal){
 const{
@@ -294,6 +269,9 @@ cat,
 growth,
 time
 }=factors(p,cal);
+growth.base_factor=growth.factor;time.base_factor=time.factor;
+growth.fit_power=cal.fit?cal.fit.growth_power:1;time.fit_power=cal.fit?cal.fit.time_power:1;
+growth.factor=Math.pow(growth.base_factor,growth.fit_power);time.factor=Math.pow(time.base_factor,time.fit_power);
 const size=cal.fit?Math.pow(p.tvl_usd/C.fit_pivot_usd,cal.fit.beta-1):1;
 const multiple=cal.fit?cat.fit.pivot_multiple*size:cat.multiple;
 const base=p.tvl_usd*multiple,
@@ -320,7 +298,7 @@ time,
 fit:cal.fit?{
 ...cal.fit,
 ...cat.fit,
-shrink_weight:cat.shrink_weight,
+shrink_weight:cat.fit.shrink_weight,
 effective_multiple:multiple
 }:null,
 base_usd:base,
@@ -387,19 +365,20 @@ predicted_value_usd:model.implied_value_usd,
 predicted_to_market:ratio,
 abs_log10_error:Math.abs(Math.log10(ratio)),
 within_3x:ratio>=1/C.validation_tolerance&&ratio<=C.validation_tolerance,
-legacy_value_usd:clamp(Math.round(p.tvl_usd*model.multiple.multiple*model.growth.factor*model.time.factor),1,C.value_cap_usd),
+legacy_value_usd:clamp(Math.round(p.tvl_usd*model.multiple.multiple*model.growth.base_factor*model.time.base_factor),1,C.value_cap_usd),
+before_value_usd:clamp(Math.round(Math.exp(cal.categories.find(c=>c.category===categoryOf(p)).before_fit.log_intercept)*Math.pow(p.tvl_usd/C.fit_pivot_usd,cal.before_fit.beta)*model.growth.base_factor*model.time.base_factor),1,C.value_cap_usd),
 baseline_value_usd:Math.max(1,Math.round(p.tvl_usd*cal.global.multiple))
 };
 }).sort((a,b)=>b.mcap_usd-a.mcap_usd||cmp(a.slug,b.slug));
 const stats={
 ...validationStats(peers,'predicted_value_usd'),
 baseline:validationStats(peers,'baseline_value_usd'),
-before:validationStats(peers,'predicted_value_usd'),
+before:validationStats(peers,'before_value_usd'),
 legacy:validationStats(peers,'legacy_value_usd'),
 missing_age_n:peers.filter((p)=>p.model.time.imputed).length,
 missing_growth_n:peers.filter((p)=>p.model.growth.missing).length,
 note:METHOD.validation+' Model selection used LOO; not untouched test data or launch evidence.',
-selection_note:'Retained v2: no tested alternative met the joint rank/error/coverage constraints.'
+selection_note:'75% G/T fit k16 + 25% ratio; snapshot-selected under relaxed limits.'
 };
 stats.rank_beats_baseline=stats.spearman>stats.baseline.spearman;
 return{
@@ -439,24 +418,24 @@ return n>=1e9?'$'+(n/1e9).toFixed(2)+'B':'$'+(n/1e6).toFixed(2)+'M';
 }
 function farmAction(p,family,capital,chain){
 const amount=money(capital),
-name=p.name;
+name=p.name,site=name+' on '+chain,test=FARM.test_capital_usd;
 const actions={
-lending:`Supply ${amount} supported collateral to ${name} on ${chain}; approve exact amount. Borrow only if required,LTV≤${FARM.max_ltv*100}%; check liquidation/interest first.`,
-dex:`LP ${amount} 50/50 in ${name}'s deepest accessible pool on ${chain}; broad range,preview impact/fees. Skip if no public LP route.`,
-yield:`Deposit ${amount} accepted asset in a public ${name} vault on ${chain} (curator-managed if applicable); keep shares,check strategy/exit queue.`,
-rwa:`Subscribe ${amount} to ${name} on ${chain}; verify investor access,minimum and redemption dates. Keep receipt; skip if ineligible/over budget.`,
-staking:`Stake/restake ${amount} supported collateral through ${name} on ${chain}. Record receipt/slashing/unbonding; no borrowing against receipt.`,
-basis:`Mint/acquire ${amount} ${name} stable/basis receipt on ${chain}; stake only if required. Check backing/spread; no leverage/loops.`,
-derivatives:`Fund ${name} on ${chain} with ${amount} margin; documented vault or ≤$${FARM.test_capital_usd} unlevered notional only if required. Quote funding; no wash volume.`
+lending:`Supply ${amount} at ${site}; exact approval. Optional debt LTV≤${FARM.max_ltv*100}%; quote interest/liquidation.`,
+dex:`LP ${amount} 50/50 at ${site},deepest public pool,broad range; check impact/fees or skip.`,
+yield:`Deposit ${amount} in a public/managed vault at ${site}; keep shares,check strategy/exit queue.`,
+rwa:`Subscribe ${amount} at ${site}; check eligibility,minimum,redemption; keep receipt or skip if restricted.`,
+staking:`Stake ${amount} collateral at ${site}; log receipt/slashing/unbonding. No leverage.`,
+basis:`Mint ${amount} stable/basis receipt at ${site}; stake if required. Check backing/spread; no loops.`,
+derivatives:`Fund ${amount} at ${site}; verified vault or ≤$${test} unlevered notional if required. Quote funding; no wash trades.`
 };
 if(actions[family])return actions[family];
 const cat=categoryOf(p).toLowerCase();
-if(/bridge|btc/.test(cat))return`Test $${FARM.test_capital_usd} ${name} transfer/redemption on ${chain}; receipt cap ${amount}. Quote bridge fees; wrappers prove no launch/points eligibility.`;
-if(/payment/.test(cat))return`Test $${FARM.test_capital_usd} in ${name}'s payment/channel route on ${chain}. Reserve ≤${amount} if supported; check close procedure/routing fees.`;
-if(/prediction/.test(cat))return`At ${name} on ${chain},budget ${amount},risk ≤$${FARM.test_capital_usd} on one outcome if rules count it; record settlement. Stake can be lost.`;
-if(/insurance/.test(cat))return`Underwrite ≤${amount} in ${name}'s public vault on ${chain} if accessible. Check claim liability/lockup; policy premiums are separate.`;
-if(/privacy/.test(cat))return`Test $${FARM.test_capital_usd} deposit/exit at ${name} on ${chain}; keep recovery receipt. Cap ${amount} after verifying exit/eligibility.`;
-return`Test $${FARM.test_capital_usd} native action at ${name} on ${chain}; for chains,transfer between your wallets. Cap documented earning route at ${amount},else skip.`;
+if(/bridge|btc/.test(cat))return`Test $${test} transfer/exit at ${site}; cap ${amount}. Quote fees; wrappers prove no points/launch.`;
+if(/payment/.test(cat))return`Test $${test} payment/channel at ${site}; cap ${amount}. Verify close procedure/fees.`;
+if(/prediction/.test(cat))return`${site}: budget ${amount},risk ≤$${test} on one eligible outcome; log settlement. Stake may be lost.`;
+if(/insurance/.test(cat))return`Underwrite ≤${amount} at ${site} if public; check claims/lockup. Premiums separate.`;
+if(/privacy/.test(cat))return`Test $${test} deposit/exit at ${site}; keep recovery receipt. Cap ${amount} after access/exit checks.`;
+return`Test $${test} native action at ${site}; transfer between your wallets. Cap earning route at ${amount},else skip.`;
 }
 function buildFarmPlan(p,model){
 const f=FARM,
@@ -504,22 +483,18 @@ duration_days:days||0,
 text:action+' Cost: '+costText+'. Time: '+time+'.'
 });
 }
-step('setup','Verify route',`${p.name}: TVL ${compactUsd(p.tvl_usd)},${growth} at ${model.as_of}. Cheapest listed chain: ${chain.chain} (gas table). Verify app/asset/eligibility; no points assumed.`,0,f.qualify_minutes,0,0,0);
-step('setup','Fund the wallet',`On ${chain.chain}: $${f.test_capital_usd} test/$${capital} standard/$${capital*f.extended_capital_factor} extended. Transfer $${capital} plus ${money(setupCost+exitCost)} fee reserve. Capital at risk; quote bridge/onboarding separately.`,1,f.fund_minutes,0,0,0);
+step('setup','Verify route',`${p.name}: TVL ${compactUsd(p.tvl_usd)},${growth},${model.as_of}. Cheapest gas-table chain: ${chain.chain}. Verify app/asset/eligibility; points unverified.`,0,f.qualify_minutes,0,0,0);
+step('setup','Fund the wallet',`${chain.chain}: $${f.test_capital_usd} test/$${capital} standard/$${capital*f.extended_capital_factor} extended. Fund $${capital} + ${money(setupCost+exitCost)} fee reserve; capital at risk. Bridge/onboarding extra.`,1,f.fund_minutes,0,0,0);
 step('setup','Open one position',farmAction(p,family,capital,chain.chain),profile[0],profile[1],fee,0,0);
-step('monitor','Hold and record',`Hold ${p.name} for ${weeks} weeks; check balance/exits/points every ${cadence} days (${checks} checks). Log receipt units. No weekly tx/reward assumed. ${money(capital)} exposed.`,0,checks*f.check_minutes,0,hold,opportunity);
+step('monitor','Hold and record',`${p.name}: hold ${weeks} weeks; check balance/exits/points every ${cadence}d (${checks} checks). Log receipts. No weekly tx/reward assumed; ${money(capital)} exposed.`,0,checks*f.check_minutes,0,hold,opportunity);
 const risk={
-lending:'Watch oracle and liquidation risk.',
-dex:'Watch divergence loss and range status.',
-yield:'Inspect strategy leverage,curators and exit queues.',
-rwa:'Check issuer solvency and redemption gates.',
-staking:'Check slashing,receipt depegs and unbonding.',
-basis:'Check backing,custodians and funding reversals.',
-derivatives:'Watch margin/funding; full position can be lost.',
-other:'Verify custody/redemption; product may offer no campaign.'
+lending:'Check oracle/liquidation.',dex:'Check divergence loss/range.',
+yield:'Check leverage/curator/exit queue.',rwa:'Check issuer/redemption gates.',
+staking:'Check slashing/depeg/unbonding.',basis:'Check backing/custody/funding.',
+derivatives:'Check margin/funding; total loss possible.',other:'Verify custody/redemption/campaign.'
 }[family];
-step('monitor','Review the exit risk',`${risk} ${growth} is not yield. If fresh TVL drops >${-f.stress_growth_pct}% weekly or exits change,stop adding funds; log fees.`,0,f.risk_review_minutes,0,0,0);
-step('exit','Unwind and revoke',`On ${chain.chain},${family==='lending'?'repay debt,':family==='derivatives'?'close trades,':''}redeem ${p.name}'s receipt/remove position; revoke approvals. Budget ${profile[3]} extra wait days; verify lockups. Log costs/losses.`,exitTx,f.exit_minutes,fee,profile[3],0);
+step('monitor','Review the exit risk',`${risk} ${growth} is not yield. Pause additions if fresh TVL drops >${-f.stress_growth_pct}% weekly or exits change; log fees.`,0,f.risk_review_minutes,0,0,0);
+step('exit','Unwind and revoke',`${chain.chain}: ${family==='lending'?'repay debt,':family==='derivatives'?'close trades,':''}redeem ${p.name}'s receipt/remove position; revoke approvals. Allow ${profile[3]} extra days; verify lockups,log costs/losses.`,exitTx,f.exit_minutes,fee,profile[3],0);
 return{
 family,
 chain:chain.chain,
