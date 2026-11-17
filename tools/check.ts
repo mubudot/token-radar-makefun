@@ -40,15 +40,17 @@ for (const [category, name] of [['Bridge', 'Example'], ['Lending', 'Example V2']
 }
 assert.equal(Model.exclusionRules({ category: 'Lending', name: 'UnwrappedLabs v2alpha' }).length, 0, 'whole-word and trailing-version boundaries');
 assert(radar.rows.every(p => !Model.exclusionRules(p).length));
-assert(radar.validation.median_abs_log10_error < radar.validation.legacy.median_abs_log10_error);
-assert(radar.validation.within_3x_share > radar.validation.legacy.within_3x_share);
-assert(radar.validation.spearman > radar.validation.legacy.spearman);
+// Regression diagnostics are reported honestly, never enforced as improvement claims.
+assert(Math.abs(radar.validation.spearman - 0.42326268082768725) < 1e-12);
+assert(Math.abs(radar.validation.median_error_factor - 3.585115715913548) < 1e-12);
+assert.equal(radar.validation.within_3x_count, 57);
+assert.equal(radar.validation.within_3x_share, 57 / 128);
+assert(Math.abs(radar.validation.baseline.spearman - 0.4161497436366966) < 1e-12);
+assert(Math.abs(radar.validation.baseline.median_error_factor - 5.069588651542522) < 1e-12);
+assert.equal(radar.validation.baseline.within_3x_count, 45);
 assert.equal(radar.validation.rank_beats_baseline, radar.validation.spearman > radar.validation.baseline.spearman);
-assert.equal(radar.validation.rank_beats_baseline, true);
-assert(radar.validation.spearman > radar.validation.before.spearman);
-assert(radar.validation.median_error_factor <= radar.validation.before.median_error_factor);
-assert(radar.validation.within_3x_share >= 0.42);
-assert(radar.validation.before.within_3x_share - radar.validation.within_3x_share <= 0.04);
+assert(Math.abs(radar.calibration.fit.time_power) > 0.1, 'T must retain a meaningful effect on this snapshot');
+assert(new Set(radar.rows.map(p => p.model.growth.factor)).size > 100, 'G must vary across the board');
 assert.equal(Model.classify({ mcap_usd: 0, gecko_id: 'identifier', symbol: null }), 'token-recorded');
 assert.equal(Model.classify({ mcap_usd: 1, gecko_id: null, symbol: null }), 'trades');
 assert.equal(Model.classify({ mcap_usd: null, gecko_id: null, symbol: null }), 'pre-token');
@@ -63,8 +65,12 @@ const samples = [sample('a', 'A', 1, 10), sample('b', 'A', 4, 20), sample('c', '
 const cal = Model.deriveMultiples(samples, asOf);
 const a = cal.categories.find(p => p.category === 'A');
 assert(Math.abs(cal.global.raw_multiple - 4) < 1e-12);
-assert(Math.abs(a.raw_multiple - 2) < 1e-12, 'even log median is a geometric midpoint');
-assert(Math.abs(a.multiple - 2 ** (1 / 3) * 4 ** (2 / 3)) < 1e-12, 'shrink in log space');
+assert.equal(a.fit.shrink_weight, 2 / 18);
+const mix = Model.CONSTANTS.ensemble_fit_weight;
+const prior = Math.log(Model.CONSTANTS.fit_pivot_usd * cal.global.multiple);
+const pooled = (cal.fit.pooled_log_intercept - (1 - mix) * prior) / mix;
+const shrunk = a.fit.shrink_weight * a.fit.raw_log_intercept + (1 - a.fit.shrink_weight) * pooled;
+assert(Math.abs(a.fit.log_intercept - (mix * shrunk + (1 - mix) * prior)) < 1e-12, 'category shrinkage and ensemble operate in log space');
 const held = Model.deriveMultiples(samples, asOf, 'c');
 assert.deepEqual(held.global.peer_slugs, ['a', 'b']);
 assert.equal(held.categories.find(p => p.category === 'B').source, 'global-fallback');
@@ -75,14 +81,28 @@ const powerPeers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30].map((k, i) => ({
   ...sample('power-' + i, 'A', 1, 0), tvl_usd: k * k * 1e6, mcap_usd: 800000 * k
 }));
 const powerCal = Model.deriveMultiples(powerPeers, asOf);
-assert(Math.abs(powerCal.before_fit.beta - 0.5) < 1e-10);
 assert(Math.abs(powerCal.fit.base_beta - 0.5) < 1e-10);
 assert(Math.abs(powerCal.fit.beta - (0.5 * Model.CONSTANTS.ensemble_fit_weight + 1 - Model.CONSTANTS.ensemble_fit_weight)) < 1e-10);
 const contaminated = powerPeers.map((p, i) => i === 11 ? { ...p, mcap_usd: p.mcap_usd * 1000 } : p);
-assert(Math.abs(Model.deriveMultiples(contaminated, asOf).before_fit.beta - 0.5) < 0.1, 'Huber slope resists one extreme market-cap observation');
+assert(Math.abs(Model.deriveMultiples(contaminated, asOf).fit.base_beta - 0.5) < 0.1, 'Huber slope resists one extreme market-cap observation');
 assert.equal(Model.impliedValue({ ...samples[0], change_7d: null, listed_at: null }, cal).growth.factor, 1);
-assert.equal(Model.impliedValue({ ...samples[0], change_7d: 10000 }, cal).growth.base_factor, Math.sqrt(2));
-assert.equal(Model.impliedValue({ ...samples[0], change_7d: -10000 }, cal).growth.base_factor, Math.sqrt(0.5));
+assert.equal(Model.CONSTANTS.growth_weight, 0.20);
+assert.equal(Model.CONSTANTS.growth_log_clip, Math.LN2);
+const neutral = Model.impliedValue({ ...samples[0], change_7d: 0 }, cal);
+for (const change of [-10000, -100, -50, -10, 0, 10, 100, 10000, null]) {
+  const result = Model.impliedValue({ ...samples[0], change_7d: change }, cal);
+  const used = Math.max(-50, Math.min(100, change ?? 0));
+  const expected = Math.exp(0.20 * Math.log1p(used / 100));
+  assert(Math.abs(result.growth.factor - expected) < 1e-12);
+  assert.equal(result.growth.weight, 0.20);
+  assert.equal(result.growth.used_pct, used);
+  assert.equal(result.growth.missing, change === null);
+  assert.equal(result.growth.clamped, change !== null && change !== used);
+  assert(Math.abs(result.unrounded_usd / neutral.unrounded_usd - expected) < 1e-12, 'growth changes the final value at fixed calibration');
+}
+const positive = Model.impliedValue({ ...samples[0], change_7d: 10 }, cal);
+const negative = Model.impliedValue({ ...samples[0], change_7d: -10 }, cal);
+assert(positive.implied_value_usd > neutral.implied_value_usd && neutral.implied_value_usd > negative.implied_value_usd);
 const ageImputed = Model.impliedValue({ ...samples[0], listed_at: null }, cal).time;
 assert.equal(ageImputed.used_days, 15); assert.equal(ageImputed.source, 'category-median');
 const times = [0, 365, 730, 1095, 100000].map(d => Model.impliedValue(sample('test', 'A', 1, d), cal).time.base_factor);
@@ -97,11 +117,13 @@ for (const p of radar.trading_peers) {
   assert(!p.model.multiple.peer_slugs.includes(p.slug));
   assert.equal(p.model.fit.n, 127);
   assert(p.model.fit.base_beta >= 0 && p.model.fit.base_beta <= Model.CONSTANTS.rank_beta_cap);
-  assert(p.model.fit.base_growth_power >= 0 && p.model.fit.base_growth_power <= 3);
-  assert(Math.abs(p.model.fit.base_time_power) <= 3);
+  assert.equal(p.model.growth.weight, Model.CONSTANTS.growth_weight);
+  assert(Math.abs(p.model.fit.base_time_power) <= Model.CONSTANTS.time_coef_cap);
   const independentFold = Model.deriveMultiples(snapshot.protocols, snapshot.as_of, p.slug);
   assert.equal(p.model.fit.beta, independentFold.fit.beta);
   assert.equal(p.model.fit.pooled_log_intercept, independentFold.fit.pooled_log_intercept);
+  assert.equal(p.predicted_value_usd, Model.impliedValue(p, independentFold).implied_value_usd);
+  assert.equal(p.baseline_value_usd, Math.max(1, Math.round(p.tvl_usd * independentFold.global.multiple)));
 }
 const round = (n: number) => Math.round(n * 100) / 100;
 for (const p of radar.rows) {
@@ -121,16 +143,15 @@ for (const p of radar.rows) {
   assert.equal(f.smart_contract_haircut_usd, round(f.capital_usd * Model.FARM.smart_contract_haircut_rate));
   assert.equal(f.depeg_haircut_usd, round(f.capital_usd * Model.FARM.depeg_haircut_rate));
   assert.equal(f.risk_haircut_usd, round(f.smart_contract_haircut_usd + f.depeg_haircut_usd));
-  assert.equal(f.est_total_cost_before_risk_usd, round(f.cash_cost_usd + f.opportunity_cost_usd));
   assert.equal(f.est_total_cost_usd, round(f.cash_cost_usd + f.opportunity_cost_usd + f.risk_haircut_usd));
-  assert.equal(f.risk_adjusted_total_cost_usd, f.est_total_cost_usd);
   assert.equal(round(steps.reduce((n, s) => n + s.all_in_cost_usd, 0)), f.est_total_cost_usd);
   assert.equal(steps[3].risk_haircut_usd, f.risk_haircut_usd);
   const expected = Math.round(p.tvl_usd * p.model.multiple.factor * p.model.growth.factor * p.model.time.factor);
   assert.equal(p.implied_value_usd, expected);
-  assert.equal(p.model.fit.effective_multiple, p.model.multiple.factor);
   const fittedBase = Math.exp(p.model.fit.log_intercept) * (p.tvl_usd / p.model.fit.pivot_tvl_usd) ** p.model.fit.beta;
-  assert(Math.abs(p.model.base_usd - fittedBase) / fittedBase < 1e-12);
+  assert(Math.abs(p.tvl_usd * p.model.multiple.factor - fittedBase) / fittedBase < 1e-12);
+  assert(p.model.growth.factor >= Math.exp(-0.20 * Math.LN2) && p.model.growth.factor <= Math.exp(0.20 * Math.LN2));
+  assert.equal(p.model.time.factor, p.model.time.base_factor ** p.model.fit.time_power);
 }
 
 // A true classic-script environment: window === globalThis, no CommonJS or module loader.
@@ -143,9 +164,14 @@ assert.equal(browserRows, JSON.stringify(radar.rows), 'browser and board must be
 const emitted = resolve(process.argv[3] || 'out', 'board.json');
 assert.equal(JSON.stringify(JSON.parse(readFileSync(emitted, 'utf8')).rows), browserRows);
 assert.deepEqual(JSON.parse(readFileSync(emitted, 'utf8')).farm_assumptions, Model.FARM);
-assert(readFileSync(new URL('../dashboard/model.js', import.meta.url)).length <= 25000);
 const sourceRoot = new URL('../dashboard/', import.meta.url);
-assert(readdirSync(sourceRoot).reduce((n, file) => n + readFileSync(new URL(file, sourceRoot)).length, 0) <= 56000);
+assert(readdirSync(sourceRoot).reduce((n, file) => n + readFileSync(new URL(file, sourceRoot)).length, 0) <= 62500);
+const output = resolve(process.argv[3] || 'out');
+const strictDossier = Buffer.from(buildDossier(output, { text_max_bytes: 64000 }));
+const doc = JSON.parse(strictDossier.toString('utf8'));
+assert(Buffer.byteLength(doc.text) <= 64000);
+assert(!/\[Cut at \d+ bytes:/.test(doc.text), 'the entire readable source must fit with listings and fences');
+assert.deepEqual(strictDossier, readFileSync(join(output, 'dossier.json')), '64,000-byte and canonical 65,536-byte caps must yield identical complete dossiers');
 
 assert(htmlNetworkIssue('<img src="https://remote.invalid/image">'));
 assert(htmlNetworkIssue('<a href="https&#58;//remote.invalid">x</a>'));

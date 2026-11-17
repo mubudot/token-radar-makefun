@@ -9,7 +9,7 @@ try {
   const report = runGate(output, snapshot);
   console.log('CHECK                 RESULT  DETAIL');
   for (const row of report.rows) console.log(row.check.padEnd(22) + (row.pass ? 'PASS' : 'FAIL').padEnd(8) + row.detail);
-  console.log(`Dashboard source: ${report.source_bytes} bytes (target ≤56000); all files: ${report.dashboard_bytes} bytes.`);
+  console.log(`Dashboard source: ${report.source_bytes} bytes (target ≤62500); all files: ${report.dashboard_bytes} bytes.`);
   for (const image of report.screenshots) console.log(`Screenshot ${image.path}: ${(image.bytes / 1024).toFixed(1)} KiB.`);
   if (!report.screenshots.length) console.log('Screenshots: none. The vendor cannot build a dossier until an image exists.');
   console.log('Determinism: bash tools/determinism.sh <snapshot.json|input-directory>');

@@ -43,11 +43,21 @@ await page.goto(url);
 await page.waitForSelector('#p-board tbody tr');
 raws.push(await snap('1-board'));
 
-// Detail: the highest-ranked watchlist protocol, drawer showing formula and farm plan.
-const top = await page.evaluate(() => { const r = RadarModel.buildRadar(RADAR_DATA).rows.find(x => x.watchlist); return { slug: r.slug, name: r.name }; });
-const slug = top.slug;
-await page.locator('#p-board tbody tr').filter({ hasText: top.name }).first().click();
+// Detail: choose observed positive growth with substantial G and T effects.
+const selected = await page.evaluate(() => {
+  const row = RadarModel.buildRadar(RADAR_DATA).rows.find(r => r.watchlist &&
+    r.change_7d > 0 && !r.model.time.imputed &&
+    Math.abs(r.model.growth.factor - 1) >= 0.02 && Math.abs(r.model.time.factor - 1) >= 0.1);
+  if (!row) throw new Error('No watchlist row with non-trivial observed G/T');
+  return { slug: row.slug, name: row.name };
+});
+const slug = selected.slug;
+await page.locator('#p-board tbody tr').filter({ hasText: selected.name }).first().click();
 await page.waitForSelector('#drawer[open] .steps');
+for (const label of ['7d growth %', 'Applied G', 'Days without token*', 'Applied T']) {
+  const bounds = await page.getByText(label, { exact: true }).boundingBox();
+  if (!bounds || bounds.y < 0 || bounds.y + bounds.height > H) throw new Error(label + ' is outside the detail capture');
+}
 raws.push(await snap('2-detail'));
 await page.keyboard.press('Escape');
 

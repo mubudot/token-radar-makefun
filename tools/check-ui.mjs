@@ -17,6 +17,8 @@ try {
     const r = RadarModel.buildRadar(RADAR_DATA), p = r.rows.find(p => p.watchlist);
     return { count: r.rows.length, watch: r.summary.watchlist_total, peers: r.trading_peers.length,
       firstWatch: p.name, budget: p.farm_plan.est_total_cost_usd.toFixed(2),
+      stats: r.validation, growth: p.change_7d, days: p.model.time.used_days,
+      G: p.model.growth.factor.toFixed(4), T: p.model.time.factor.toFixed(4),
       maxTvlName: r.rows.slice().sort((a,b) => b.tvl_usd-a.tvl_usd)[0].name };
   });
   assert.equal(await page.locator('#p-board tbody tr').count(), expected.count);
@@ -31,16 +33,21 @@ try {
   await page.locator('#p-watchlist tbody tr').filter({ hasText: expected.firstWatch }).click();
   assert.equal(await page.locator('#drawer[open] .steps li').count(), 6);
   const detail = await page.locator('#d-body').textContent();
-  for (const label of ['Capital at risk', 'All-in budget', 'Gas (all steps)', 'Contract haircut 1%', 'Depeg haircut 1%', '$' + expected.budget]) assert(detail.includes(label), label);
+  for (const label of ['7d growth %', 'Days without token*', 'Applied G', 'Applied T', expected.G + '×', expected.T + '×', 'Capital at risk', 'All-in budget', 'Gas (all steps)', 'Contract haircut 1%', 'Depeg haircut 1%', '$' + expected.budget]) assert(detail.includes(label), label);
   await page.keyboard.press('Escape');
   await page.click('#t-peers');
   assert.equal(await page.locator('#p-peers tbody tr').count(), expected.peers);
+  assert(!(await page.locator('#p-peers').textContent()).includes('undefinedd'));
   await page.locator('#p-peers tbody tr').first().click();
   assert((await page.locator('#d-body').textContent()).includes('LOO vs market cap'));
   await page.keyboard.press('Escape');
   await page.click('#t-model');
   const model = await page.locator('#p-model').textContent();
-  for (const text of ['Spearman beats baseline', 'Ensemble', 'Before v2', 'smart_contract_haircut_rate', 'depeg_haircut_rate', '0.4161', '0.3989', '0.4237']) assert(model.includes(text), text);
+  for (const text of ['Ensemble v4', 'Baseline', 'growth_weight', 'growth_log_clip', 'stated priors',
+    'smart_contract_haircut_rate', 'depeg_haircut_rate', expected.stats.spearman.toFixed(6),
+    expected.stats.baseline.spearman.toFixed(6), expected.stats.median_error_factor.toFixed(4),
+    expected.stats.baseline.median_error_factor.toFixed(4), `${expected.stats.within_3x_count}/${expected.peers}`]) assert(model.includes(text), text);
+  assert(model.includes(expected.stats.rank_beats_baseline ? 'Spearman beats baseline.' : 'Baseline ranks better.'));
   assert.equal(await page.locator('#p-model .g2m > :last-child tbody tr').count(), 144);
   await page.locator('#p-model .g2m > :last-child tbody tr').first().click();
   assert((await page.locator('#d-body').textContent()).includes('EXCLUDED'));
