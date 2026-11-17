@@ -20,7 +20,8 @@ try {
   const errors = checks.filter(check => !check.pass);
   if (errors.length) throw new Error(errors.map(e => e.check + ': ' + e.detail).join('\n'));
   const boardText = JSON.stringify({ as_of: snapshot.as_of, model_version: radar.version,
-    constants: radar.constants, validation: radar.validation, rows: radar.rows }) + '\n';
+    constants: radar.constants, farm_assumptions: radar.farm_assumptions,
+    validation: radar.validation, rows: radar.rows }) + '\n';
   if (Buffer.byteLength(boardText) > 8_388_608) throw new Error('Board exceeds 8 MiB');
   const copied = prepareOutput(repository, output);
   writeFileSync(join(output, 'board.json'), boardText);

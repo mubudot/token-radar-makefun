@@ -4,6 +4,60 @@ This is the frontend's complete handoff. Replace only `dashboard/index.html`, `d
 
 ## Changes
 
+### Final submission pass
+
+**Valuation is retained v2, not a claimed ranking improvement.** On the same 128 held-out records, before and after remain Spearman 0.3989138894, median error factor 3.8198541, within 3× 59/128 (46.09375%). The naive ratio baseline's Spearman is higher, 0.4161497436; its median factor is 5.0695887 and within 3× is 45/128 (35.15625%). The Model tab now says **“Baseline ranks better”** explicitly, with n and all metrics beside the retained model. No model is adopted simply because one metric improved.
+
+Exploratory fits raised the pooled β cap to 2, fitted bounded log-growth/log-time coefficients, tested numeric chain count and date-missing indicators, raw tracking age, regularized category slopes, rank-target fits, shrinkage strengths and geometric ensembles. None met the joint acceptance rule: Spearman above baseline, median error no worse than v2, and within-3× no worse than v2. Examples: fitted G/T with k=16 reached rho 0.41737 and median factor 3.7135 but covered only 58/128; the equal v2/baseline ensemble reached rho 0.41930 but median factor 3.8857 and 55/128 coverage. The negative-growth weighted fit at k=16 reached rho 0.42788 but only 56/128 coverage. These were rejected, not hidden as successful models. Coefficients, category pools and age imputations were refitted without the held-out target in these comparisons; no names/slugs were predictors. Exploratory model selection on this snapshot is not an independent final test.
+
+Additions to `validation`: `before: BasicValidation` (equals current because v2 was retained), `rank_beats_baseline: boolean` (currently false), and `selection_note: string`. Existing `baseline`, `legacy` and headline metrics remain. Future model changes must compute their own honest before reference rather than relabeling new predictions as the prior model.
+
+**Farm cost is now an explicit full ledger.** Suggested principal remains `capital_usd` / `capital_at_risk_usd`; principal is not counted as a spent fee. Existing setup/exit costs and per-step `est_cost_usd` retain their cash-only meaning. Existing `est_total_cost_usd` now includes risk haircuts:
+
+```text
+H = hold_days + exit_wait_days_assumed
+opportunity = capital × opportunity_apr × H / 365
+contract haircut = capital × smart_contract_haircut_rate
+depeg/receipt haircut = capital × depeg_haircut_rate
+total = setup cash + exit cash + opportunity + contract haircut + depeg haircut
+```
+
+`FARM.opportunity_apr=0.05` remains the stated annual alternative yield. New named `FARM.smart_contract_haircut_rate=0.01` and `FARM.depeg_haircut_rate=0.01` each reserve 1% of capital over that stated horizon. They are **planning stress allowances, not measured probabilities or maximum losses**. Full principal can be lost. The horizon is not a predicted token date. Entry/exit cash still consists of chain gas per transaction plus the existing 25bps fee/slippage reserve each way. New rates and horizon assumptions are visible on the Model tab and detail drawer.
+
+The board JSON now also adds top-level `farm_assumptions`, the complete named `FARM` constants, including the annual rate and both haircut rates. All additions below are inside every `board.json.rows[i].farm_plan` and the browser-computed plan:
+
+```ts
+cash_cost_usd: number;                 // setup + exit cash
+opportunity_horizon_days: number;      // H above
+risk_horizon_days: number;             // same stated H
+smart_contract_haircut_usd: number;    // rounded to cents
+depeg_haircut_usd: number;
+risk_haircut_usd: number;              // sum of the two allowances
+est_total_cost_before_risk_usd: number;// former total: cash + opportunity
+risk_adjusted_total_cost_usd: number;  // alias of updated est_total_cost_usd
+```
+
+Every `FarmStep` adds `risk_haircut_usd` and `all_in_cost_usd`. Step 4 carries opportunity (including assumed exit wait) and the risk allowance once; other steps carry zero haircut. Sum of step all-in costs equals the plan total. `farm_steps` strings also state the haircut. The drawer shows principal, gas, fee reserve, opportunity/rate/horizon, each haircut and total; board cost sorting uses the new total and its tooltip provides the components.
+
+**Packaging:** dashboard source is kept below 56,000 bytes with whitespace/comment-only formatting, no identifier mangling or removed screens. `tools/compact.cjs` uses the operator's existing Playwright Babel bundle as a dev-only formatter; no runtime dependency or generated helper is installed. Table sort headers expose `aria-sort` on the active th.
+
+**Capture is operator-only.** `tools/shoot.mjs` now captures exactly `1-board.png`, `2-detail.png`, `3-filtered.png`; `4-model.png` was deleted. It encodes each PNG into **300000–350000 bytes**, and checks the rebuilt dossier against 1572864 bytes. `tools/shot-encoding.mjs` losslessly adjusts actual PNG scanline compression (stored prefix + compressed remainder), preserving pixels, dimensions and ancillary chunks; no junk/padding metadata is inserted. It fails rather than emit an out-of-window image. `tools/check-encoding.mjs` tests existing images in temporary output only, verifies identical scanlines and deterministic encoding, and checks a full-source dossier. No browser capture is run by these tests. The existing three source captures are still the older 223–231KB images and must be refreshed by the operator after these UI changes.
+
+Validation commands for this pass:
+
+```sh
+node main.ts --input ../token-radar-01-kit/input/snapshot.json --output /tmp/radar-final-pass
+node tools/check.ts ../token-radar-01-kit/input/snapshot.json /tmp/radar-final-pass
+node tools/check-encoding.mjs
+node tools/check-ui.mjs /tmp/radar-final-pass  # functional interactions only; never captures
+bash tools/determinism.sh ../token-radar-01-kit/input/snapshot.json
+node tools/gate.ts /tmp/radar-final-pass --input ../token-radar-01-kit/input/snapshot.json
+```
+
+The sealed seven-row gate enforces the screenshot maximum, not the stricter requested 300KB minimum. Thus current old captures can pass that gate; this is not a claim that operator recapture is complete. Root Git metadata is left to the operator.
+
+In this sandbox the no-capture UI test was attempted but Chromium could not launch (`sandbox_host_linux.cc: Operation not permitted`); it reached no page and took no images. The operator should run that test in the capture-capable environment. Node/classic-script model parity, all cost ledgers and lossless encoder tests do pass. Screenshot encoding tests produced 305756 / 307141 / 301347 bytes and a 1276687-byte full-source dossier without changing source captures.
+
 **Product-owner revision: `peer-radar-2`. Read this addendum first.** It supersedes the v1 count/value examples and the v1 multiple interpretation below. Existing function signatures and property types are retained; new properties/functions are additive. The raw RADAR_DATA shape, load order, farm-plan shape, growth factor and age factor are unchanged. The frontend files and screenshots are owned by Antigravity and were not edited for this revision. Recompute with the new model and recapture any v1 screenshots.
 
 **Launch candidates:** `isRankable(p)` now applies all watchlist rules that are observable from the ten fields, without the TVL floor. It requires `classify(p)==='pre-token'` and no rule below. Parent-protocol metadata is unavailable; no parent relationship is invented.
