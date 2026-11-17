@@ -17,16 +17,32 @@ const input = process.argv[2] || '../token-radar-01-kit/input/snapshot.json';
 const snapshot = readSnapshot(input), before = JSON.stringify(snapshot);
 const radar = Model.buildRadar(snapshot);
 assert.equal(JSON.stringify(snapshot), before, 'model must not mutate raw inputs');
-assert.equal(radar.rows.length, 285);
+assert.equal(radar.rows.length, 198);
 assert.equal(radar.summary.watchlist_covered, 40);
 assert.equal(radar.trading_peers.length, 128);
 assert.equal(radar.summary.token_recorded, 288);
-assert.equal(radar.excluded.length, 345);
+assert.equal(radar.excluded.length, 432);
+assert.equal(radar.summary.excluded_categories, 128);
+assert.equal(radar.summary.excluded_pre_token, 144);
+assert.equal(radar.rows.length + radar.trading_peers.length + radar.excluded.length, snapshot.protocols.length);
 assert(checkBoard(radar.rows, snapshot).every(r => r.pass));
 assert(radar.rows.every(p => Model.isRankable(p) && p.token_status === 'pre-token'));
 assert.equal(JSON.stringify(Model.buildRadar({ ...snapshot, protocols: snapshot.protocols.slice().reverse(), watchlist: snapshot.watchlist.slice().reverse() })), JSON.stringify(radar), 'input ordering must not affect any result');
 const renamed = Model.buildRadar({ ...snapshot, protocols: snapshot.protocols.map((p, i) => ({ ...p, name: 'Record ' + i })) });
-assert.deepEqual(renamed.rows.map(p => [p.slug, p.rank, p.implied_value_usd]), radar.rows.map(p => [p.slug, p.rank, p.implied_value_usd]), 'names cannot change rank/value');
+// Generic name rules now affect eligibility, while names still cannot affect a value.
+for (const p of radar.rows) assert.equal(renamed.rows.find(q => q.slug === p.slug)?.implied_value_usd, p.implied_value_usd);
+for (const p of radar.excluded.filter(p => p.token_status === 'pre-token')) {
+  assert(p.exclusion_rules.length > 0);
+  assert(p.reason.startsWith('excluded: derivative/infrastructure of a traded token; '));
+}
+for (const [category, name] of [['Bridge', 'Example'], ['Lending', 'Example V2'], ['Lending', 'Wrapped Example'], ['Lending', 'Example STAKED asset'], ['Lending', 'Coinbase Example']]) {
+  assert(Model.exclusionRules({ category, name }).length > 0);
+}
+assert.equal(Model.exclusionRules({ category: 'Lending', name: 'UnwrappedLabs v2alpha' }).length, 0, 'whole-word and trailing-version boundaries');
+assert(radar.rows.every(p => !Model.exclusionRules(p).length));
+assert(radar.validation.median_abs_log10_error < radar.validation.legacy.median_abs_log10_error);
+assert(radar.validation.within_3x_share > radar.validation.legacy.within_3x_share);
+assert(radar.validation.spearman > radar.validation.legacy.spearman);
 assert.equal(Model.classify({ mcap_usd: 0, gecko_id: 'identifier', symbol: null }), 'token-recorded');
 assert.equal(Model.classify({ mcap_usd: 1, gecko_id: null, symbol: null }), 'trades');
 assert.equal(Model.classify({ mcap_usd: null, gecko_id: null, symbol: null }), 'pre-token');
@@ -47,6 +63,16 @@ const held = Model.deriveMultiples(samples, asOf, 'c');
 assert.deepEqual(held.global.peer_slugs, ['a', 'b']);
 assert.equal(held.categories.find(p => p.category === 'B').source, 'global-fallback');
 assert.equal(held.global.median_age_days, 15, 'held-out record excluded from age pool');
+assert.equal(JSON.stringify(Model.deriveMultiples(samples.map(p => p.slug === 'c' ? { ...p, mcap_usd: p.mcap_usd * 1e8, listed_at: '1900-01-01' } : p), asOf, 'c')), JSON.stringify(held), 'held-out cap/date cannot influence fitted coefficients or imputation');
+// Exact sublinear relation with known priors: recover beta=0.5 rather than imposing beta=1.
+const powerPeers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30].map((k, i) => ({
+  ...sample('power-' + i, 'A', 1, 0), tvl_usd: k * k * 1e6, mcap_usd: 800000 * k
+}));
+const powerCal = Model.deriveMultiples(powerPeers, asOf);
+assert(Math.abs(powerCal.fit.beta - 0.5) < 1e-10);
+assert(Math.abs(Math.exp(powerCal.fit.pooled_log_intercept) - 1e7) / 1e7 < 1e-10);
+const contaminated = powerPeers.map((p, i) => i === 11 ? { ...p, mcap_usd: p.mcap_usd * 1000 } : p);
+assert(Math.abs(Model.deriveMultiples(contaminated, asOf).fit.beta - 0.5) < 0.1, 'Huber slope resists one extreme market-cap observation');
 assert.equal(Model.impliedValue({ ...samples[0], change_7d: null, listed_at: null }, cal).growth.factor, 1);
 assert.equal(Model.impliedValue({ ...samples[0], change_7d: 10000 }, cal).growth.factor, Math.sqrt(2));
 assert.equal(Model.impliedValue({ ...samples[0], change_7d: -10000 }, cal).growth.factor, Math.sqrt(0.5));
@@ -62,6 +88,11 @@ for (const p of radar.trading_peers) {
   assert.equal(p.model.multiple.global_n, 127);
   assert.equal(p.model.multiple.omitted_slug, p.slug);
   assert(!p.model.multiple.peer_slugs.includes(p.slug));
+  assert.equal(p.model.fit.n, 127);
+  assert(p.model.fit.beta >= 0 && p.model.fit.beta <= 1);
+  const independentFold = Model.deriveMultiples(snapshot.protocols, snapshot.as_of, p.slug);
+  assert.equal(p.model.fit.beta, independentFold.fit.beta);
+  assert.equal(p.model.fit.pooled_log_intercept, independentFold.fit.pooled_log_intercept);
 }
 const round = (n: number) => Math.round(n * 100) / 100;
 for (const p of radar.rows) {
@@ -78,6 +109,9 @@ for (const p of radar.rows) {
   assert.equal(f.est_total_cost_usd, round(f.est_setup_cost_usd + f.est_exit_cost_usd + f.opportunity_cost_usd));
   const expected = Math.round(p.tvl_usd * p.model.multiple.factor * p.model.growth.factor * p.model.time.factor);
   assert.equal(p.implied_value_usd, expected);
+  assert.equal(p.model.fit.effective_multiple, p.model.multiple.factor);
+  const fittedBase = Math.exp(p.model.fit.log_intercept) * (p.tvl_usd / p.model.fit.pivot_tvl_usd) ** p.model.fit.beta;
+  assert(Math.abs(p.model.base_usd - fittedBase) / fittedBase < 1e-12);
 }
 
 // A true classic-script environment: window === globalThis, no CommonJS or module loader.
@@ -89,7 +123,7 @@ const browserRows = runInContext('JSON.stringify(RadarModel.buildRadar(RADAR_DAT
 assert.equal(browserRows, JSON.stringify(radar.rows), 'browser and board must be byte-identical');
 const emitted = resolve('out/board.json');
 assert.equal(JSON.stringify(JSON.parse(readFileSync(emitted, 'utf8')).rows), browserRows);
-assert(readFileSync(new URL('../dashboard/model.js', import.meta.url)).length <= 22000);
+assert(readFileSync(new URL('../dashboard/model.js', import.meta.url)).length <= 24000);
 
 assert(htmlNetworkIssue('<img src="https://remote.invalid/image">'));
 assert(htmlNetworkIssue('<a href="https&#58;//remote.invalid">x</a>'));

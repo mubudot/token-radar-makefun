@@ -2,6 +2,103 @@
 
 This is the frontend's complete handoff. Replace only `dashboard/index.html`, `dashboard/app.css`, `dashboard/app.js`, and add your actual captures under repository `screenshots/`. Preserve `dashboard/model.js`. It is the same deterministic classic script that Node loads to write the ranked board. There is no `farm.js`, dependency, fetch, module script, or network requirement.
 
+## Changes
+
+**Product-owner revision: `peer-radar-2`. Read this addendum first.** It supersedes the v1 count/value examples and the v1 multiple interpretation below. Existing function signatures and property types are retained; new properties/functions are additive. The raw RADAR_DATA shape, load order, farm-plan shape, growth factor and age factor are unchanged. The frontend files and screenshots are owned by Antigravity and were not edited for this revision. Recompute with the new model and recapture any v1 screenshots.
+
+**Launch candidates:** `isRankable(p)` now applies all watchlist rules that are observable from the ten fields, without the TVL floor. It requires `classify(p)==='pre-token'` and no rule below. Parent-protocol metadata is unavailable; no parent relationship is invented.
+
+| Rule | Exact predicate |
+| --- | --- |
+| Category | `Bridge`, `Canonical Bridge`, `Liquid Staking`, `Liquid Restaking`, `Restaked BTC`, `CEX` (the expanded `EXCLUDED_CATEGORIES`). |
+| Version marker | The README's trailing version regex (verbatim below). |
+| Product word | A whole word wrapped, staked or staking, case-insensitive. |
+| Exchange prefix | A name beginning with any listed exchange, case-insensitive. |
+
+```js
+/\s(V\d+(\.\d+)?|v\d+(\.\d+)?|\d+\.\d+)$/
+/\b(wrapped|staked|staking)\b/i
+/^(Binance|Coinbase|Bybit|Kraken|Bitget|OKX|Bitfinex|Gemini)/i
+```
+
+New **`RadarModel.exclusionRules(p): string[]`** returns every matching rule, not just the first. Strings identify `category: …`, `name: trailing version marker`, `name: whole word wrapped/staked/staking`, or `name: exchange prefix`. This helper is independent of token status; `isRankable` combines both. No per-slug terms or TVL cutoff are used. Every excluded record adds **`exclusion_rules: string[]`**. Pre-token exclusions have `reason = 'excluded: derivative/infrastructure of a traded token; ' + rules.join('; ')`; token-recorded records retain their identifier/no-positive-cap reason. These are conservative screening tags, not independently verified token histories. All exclusions are in `radar.excluded`, so the page can list them with the actual rule.
+
+Current counts: **198 board records, 40/40 watchlist, 158 off-watchlist, 138 below floor; 128 trading peers; 288 token-recorded; 144 pre-token exclusions**. New **`summary.excluded_pre_token`** is 144. Existing `summary.excluded_categories` counts the 128 pre-token records matching a category rule; 16 additional pre-token records match name rules only. `radar.excluded.length` is 432. Conservation: 198 + 128 + 288 + 144 = 758. Matching rule counts overlap: category 128, version marker 11, whole-word product 20, exchange prefix 14. Never sum those overlapping rule counts.
+
+**New valuation formula (all natural logs):**
+
+```text
+implied = round(exp(a_category) × (TVL / $100M)^β × G × T)
+a_category = w × median_category(log(mcap)-log(G×T)-β×log(TVL/$100M)) + (1-w) × a_pooled
+w = n/(n+4)
+```
+
+`a_pooled` is the median adjusted log-cap intercept. β is estimated with a joint Huber iteration: initialize with bounded pooled least squares; each iteration subtracts shrunk category median residual offsets, computes Huber residual weights, re-estimates the bounded pooled slope, then recenters the pooled intercept by median. Final category intercepts shrink their medians toward that pooled intercept. Extreme caps receive less slope influence; no category gets a separate slope. This lets large TVL scale sublinearly rather than forcing a 1:1 token-cap increase. Different category intercepts accommodate economically different token/receipt records without excluding inconvenient validation cases. All 128 traded positive-TVL records, including wrapper-like categories, remain in validation and training folds.
+
+G/T are exactly the previous bounded priors. Training targets subtract `log(G×T)` so the fitted base does not double-count those factors. There is no fitted growth strength, age strength, per-name coefficient, external dataset or hand-written protocol value. Age remains a tracking proxy rather than verified time without a token.
+
+New `CONSTANTS` entries (show alongside the existing constants):
+
+| Key | Value | Reason |
+| --- | --- | --- |
+| `fit_pivot_usd` | 100000000 | Reference TVL unit; changing units alone does not change predictions. |
+| `fit_beta_floor`, `fit_beta_cap` | 0, 1 | Permit flat through proportional size scaling; prevent negative or superlinear size extrapolation. |
+| `fit_iterations` | 30 | Fixed deterministic robust-fit iteration budget. |
+| `fit_huber_delta` | 1.345 | Robust residual-weight cutoff in scale units. |
+| `fit_mad_scale` | 1.4826 | Convert median absolute residual deviation to a robust scale. |
+| `fit_scale_floor` | 0.1 | Log-unit floor to prevent collapsed scales on near-exact data. |
+
+Existing `shrink_k=4` also shrinks the fitted category intercepts. Existing `multiple_floor/cap` (0.02/5) now describe **v1 ratio diagnostics only**; they do not clamp the new effective multiple. The final positive whole-dollar value guard remains 1..100000000000000. Existing growth/time/confidence constants and all farm constants retain their roles.
+
+**Additive calibration/breakdown fields:**
+
+```ts
+// Added to Calibration:
+fit: {
+  beta: number;
+  pooled_log_intercept: number; // a_pooled
+  pivot_tvl_usd: number;        // 100000000
+  n: number;                   // all fitting peers, 128 full / 127 in LOO
+};
+
+// Added to every CategoryMultiple, including model.multiple via its existing spread:
+fit: {
+  raw_log_intercept: number | null; // category median adjusted log-cap intercept
+  log_intercept: number;            // a_category after shrinkage
+  pivot_multiple: number;           // exp(a_category) / pivot_tvl_usd
+};
+
+// Added directly to Breakdown.multiple:
+size_factor: number;    // (TVL / pivot)^(beta-1)
+beta: number;
+pivot_tvl_usd: number;
+
+// Added to Breakdown:
+fit: {
+  beta: number; pooled_log_intercept: number; pivot_tvl_usd: number; n: number;
+  raw_log_intercept: number | null; log_intercept: number; pivot_multiple: number;
+  shrink_weight: number; effective_multiple: number;
+} | null; // null only when impliedValue is explicitly given a legacy calibration without fit
+```
+
+**UI compatibility:** `model.multiple.factor` continues to be the actual applied multiplier, now `fit.pivot_multiple × size_factor`. Thus `TVL × model.multiple.factor × growth.factor × time.factor` still exactly produces the board value before whole-dollar rounding, and `base_usd`/`after_growth_usd` remain valid. However, `model.multiple.factor` is **no longer an alias of `.multiple.multiple`**. All original raw-ratio/global-ratio/shrunk-ratio fields remain unchanged for v1 diagnostics; they are not the new fit. Label the category table's new `fit.pivot_multiple` as **“fitted multiple at $100M TVL”**, and show β/size adjustment in detail. For the formula explain `exp(fit.log_intercept)` (cap at pivot), TVL/pivot, β, G and T; raw category ratio may be shown separately as a diagnostic. Use the dynamic `METHOD.formula`, `.multiple`, and new **`METHOD.fit`** strings rather than the old v1 method prose. The model source remains a single classic script.
+
+Current full fit: **β=0.5310042267407881**, pooled log intercept **16.65073224137006**. These are derived checks, not UI literals. E.g. doubling TVL multiplies the fitted base by `2^β`, about 1.445, rather than 2. Fitted category intercept evidence is still explicitly sparse for n=0/1/2; the evidence confidence labels have not been promoted.
+
+**Validation additions:** every TradingPeer adds **`legacy_value_usd: number`**, the positive whole-dollar v1 prediction from that same held-out calibration's original ratio fields and unchanged G/T. `validation.legacy` adds a complete `BasicValidation` object for those v1 predictions; the existing top-level validation fields now describe v2. `validation.baseline` is unchanged (global raw-ratio × TVL). Every fold recomputes β, pooled/category intercepts, medians and age imputation with its target removed. The fitted model never sees that target's cap during its prediction.
+
+| Same 128-record LOO evaluation | Median absolute log10 error | Median factor | Within 3× | Spearman |
+| --- | ---: | ---: | ---: | ---: |
+| v1 ratio model (`validation.legacy`) | 0.6954024808 | 4.9591× | 45/128 = 35.15625% | 0.3934490020 |
+| v2 joint Huber, selected | 0.5820467739 | 3.8199× | 59/128 = 46.09375% | 0.3989138894 |
+| Global ratio baseline | 0.7049727219 | 5.0696× | 45/128 = 35.15625% | 0.4161497436 |
+
+The new model improves all three requested metrics over v1; the global baseline still has slightly higher rank correlation. These remain noisy cross-sectional diagnostics, not launch probabilities or independent-token validation. The same peer set contains overlapping product/token records. Model choice used the LOO comparison; **this is not an untouched final test set**.
+
+For transparency, the small exploratory family comparison also checked pooled log-OLS (error 0.58327, within 46.09%, rank 0.39747), pooled Huber (0.58199, 42.19%, 0.39593), Theil–Sen (0.58262, 42.19%, 0.39060), shrunk local OLS slopes (0.61596, 43.75%, 0.38991), and shrunk local Huber slopes (0.60449, 42.19%, 0.40388). Joint Huber retained the pooled model's stability and better coverage; separate category slopes did not justify their extra degrees of freedom. No exhaustive parameter search or per-name terms were used. Growth/time strengths were not tuned.
+
+The revised model must stay **≤24,000 bytes** (model.js plus farm.js if split; there is no split). Keep the complete dashboard source ≤56,000 bytes so the dossier includes it. Git commits now belong to the operator; the previous backend bundle is a historical v1 artifact, not this revision. No Git writes are required here.
+
 ## Build and load
 
 ```sh
