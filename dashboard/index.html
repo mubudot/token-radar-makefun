@@ -1,5 +1,44 @@
 <!doctype html>
-<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Token Radar · frontend handoff</title><link rel="stylesheet" href="app.css">
-<main><h1>Token Radar</h1><p id="status">Loading the shared model…</p><p>Frontend placeholder. See docs/CONTRACT.md for the interface.</p></main>
-<script src="../data.js"></script><script src="model.js"></script><script src="app.js"></script></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Token Launch Radar</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="shell">
+<header class="top">
+<div class="row nw">
+<svg width="24" height="24" viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="12" fill="none" stroke="#1f242c"/><circle cx="14" cy="14" r="7" fill="none" stroke="#1f242c"/><path d="M14 14l9-7.5A12 12 0 0 1 26 14Z" fill="#f2b33d29"/><path d="M14 14l9-7.5" stroke="#f2b33d"/><circle cx="20" cy="9.5" r="1.8" fill="#f2b33d"/></svg>
+<div><div class="row"><h1>TOKEN LAUNCH RADAR</h1><span class="tag acc" id="ver"></span></div><p class="mut" id="meta"></p></div>
+</div>
+<span class="mut nw"><kbd>/</kbd> Search <kbd>Esc</kbd> Close</span>
+</header>
+<section class="g6 mt" id="kpis"></section>
+<nav class="nav mt">
+<div class="tabs" role="tablist">
+<button type="button" role="tab" id="t-board" aria-selected="true" data-t="board">Board <span class="tag" id="c-board"></span></button>
+<button type="button" role="tab" id="t-watchlist" aria-selected="false" data-t="watchlist">Watchlist <span class="tag" id="c-watchlist"></span></button>
+<button type="button" role="tab" id="t-peers" aria-selected="false" data-t="peers">Trading peers <span class="tag" id="c-peers"></span></button>
+<button type="button" role="tab" id="t-model" aria-selected="false" data-t="model">Model &amp; Excluded <span class="tag" id="c-model"></span></button>
+</div>
+<div class="mut nw" id="rstat"></div>
+</nav>
+<section class="panel p7 mt" id="flt">
+<div class="row fgrid">
+<label class="fld sfld"><span class="lbl">Search</span><input type="search" id="fq" placeholder="Name, slug, category, chain (/)"></label>
+<label class="fld"><span class="lbl">Category</span><select id="fcat"></select></label>
+<label class="fld"><span class="lbl">Chain</span><select id="fchn"></select></label>
+<label class="fld"><span class="lbl">Min TVL</span><select id="ftvl"></select></label>
+<div class="row togs"><button type="button" class="btn" id="fpos" aria-pressed="false">7d&gt;0</button><button type="button" class="btn" id="fwat" aria-pressed="false">Watchlist</button><button type="button" class="btn" id="frst">Reset</button></div>
+</div>
+<div class="row chips" id="chips" hidden></div>
+</section>
+<main class="mt"><section id="p-board" role="tabpanel"></section><section id="p-watchlist" role="tabpanel" hidden></section><section id="p-peers" role="tabpanel" hidden></section><section id="p-model" role="tabpanel" hidden></section></main>
+</div>
+<dialog id="drawer" class="drawer" closedby="any" aria-labelledby="d-title"><div class="d-in" id="d-body"></div></dialog>
+<script src="../data.js"></script><script src="model.js"></script><script src="app.js"></script>
+</body>
+</html>
